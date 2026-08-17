@@ -124,6 +124,8 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
+  p->mask = 0;
+  p->allowed_path[0] = '\0';
 
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
@@ -169,6 +171,8 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+  p->mask = 0;
+  p->allowed_path[0] = '\0';
 }
 
 // Create a user page table for a given process, with no user memory,
@@ -223,7 +227,7 @@ userinit(void)
 
   p = allocproc();
   initproc = p;
-  
+
   p->cwd = namei("/");
 
   p->state = RUNNABLE;
@@ -272,6 +276,9 @@ kfork(void)
     return -1;
   }
   np->sz = p->sz;
+
+  np->mask = p->mask;
+  safestrcpy(np->allowed_path, p->allowed_path, sizeof(np->allowed_path));
 
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);

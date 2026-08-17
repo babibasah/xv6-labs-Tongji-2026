@@ -11,8 +11,7 @@ void usage(char *s) {
 
 // Sandbox a command by disallowing system calls in mask and
 // system calls that are using path
-int
-main(int argc, char *argv[])
+int main(int argc, char *argv[])
 {
   int i;
   int n = 2;

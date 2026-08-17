@@ -108,6 +108,7 @@ CFLAGS += -fno-builtin-memcpy -Wno-main
 CFLAGS += -fno-builtin-printf -fno-builtin-fprintf -fno-builtin-vprintf
 CFLAGS += -I.
 CFLAGS += $(shell $(CC) -fno-stack-protector -E -x c /dev/null >/dev/null 2>&1 && echo -fno-stack-protector)
+CFLAGS += -march=rv64g -mabi=lp64
 
 ifeq ($(LAB),net)
 CFLAGS += -DNET_TESTS_PORT=$(SERVERPORT)
@@ -118,13 +119,7 @@ CFLAGS += -DKCSAN
 KCSANFLAG = -fsanitize=thread -fno-inline
 endif
 
-# Disable PIE when possible (for Ubuntu 16.10 toolchain)
-ifneq ($(shell $(CC) -dumpspecs 2>/dev/null | grep -e '[^f]no-pie'),)
-CFLAGS += -fno-pie -no-pie
-endif
-ifneq ($(shell $(CC) -dumpspecs 2>/dev/null | grep -e '[^f]nopie'),)
-CFLAGS += -fno-pie -nopie
-endif
+CFLAGS += -fno-pie -no-pie -fno-pic
 
 LDFLAGS = -z max-page-size=4096
 
@@ -138,7 +133,7 @@ $K/%.o: $K/%.c
 	$(CC) $(CFLAGS) $(EXTRAFLAG) -c -o $@ $<
 
 $K/%.o: $K/%.S
-	$(CC) -g -c -o $@ $<
+	$(CC) $(CFLAGS) -g -c -o $@ $<
 
 tags: $(OBJS)
 	etags kernel/*.S kernel/*.c
@@ -195,19 +190,7 @@ UPROGS=\
 	$U/_logstress\
 	$U/_forphan\
 	$U/_dorphan\
-
-<<<<<<< Updated upstream
-
-
-ifeq ($(LAB),util)
-UPROGS += \
-	$U/_sleep\
-	$U/_sixfive\
-	$U/_find
-endif
-### ENDIF
-=======
->>>>>>> Stashed changes
+	$U/_sandbox\
 
 
 ifeq ($(LAB),syscall)
