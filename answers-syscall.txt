@@ -1,0 +1,23 @@
+1. Looking at the backtrace output, which function called syscall?
+kernel/trap.c:68
+
+2. What is the value of p->trapframe->a7 and what does that value represent?
+$1 = 0xf
+
+3. What was the previous mode that the CPU was in?
+$2 = 0x200000022
+0x022 (十六进制) = 00100010 (二进制)
+Bit 8 = 0, CPU was running in User mode (U-mode)
+
+4. Write down the assembly instruction the kernel is panicing at. Which register corresponds to the variable num?
+Instruction: 80002c08: lw a3,0(zero)
+Register: a3
+
+5. Why does the kernel crash?
+The kernel panicked due to a Supervisor Load Page Fault (indicated by scause = 0xd / decimal 13).
+The instruction at sepc (0x80002c08) was "lw a3, 0(zero)", which attempted to load 4 bytes from virtual address 0x0 (as recorded in stval = 0x0). 
+In xv6, virtual address 0x0 is intentionally left unmapped in the kernel's page table (kernel_pagetable). When the MMU attempted to translate virtual address 0x0, it found no valid Page Table Entry (PTE_V = 0), triggering an unhandled page fault exception in kernel mode. Because the fault occurred in supervisor mode, xv6's kerneltrap() caught the exception and called panic("kerneltrap").
+
+6. What is the name of the process that was running when the kernel paniced? What is its process id (pid)?
+Name: init
+Process ID: 1

@@ -196,6 +196,7 @@ UPROGS=\
 	$U/_forphan\
 	$U/_dorphan\
 
+<<<<<<< Updated upstream
 
 
 ifeq ($(LAB),util)
@@ -205,6 +206,8 @@ UPROGS += \
 	$U/_find
 endif
 ### ENDIF
+=======
+>>>>>>> Stashed changes
 
 
 ifeq ($(LAB),syscall)
