@@ -9,6 +9,8 @@
 #include "riscv.h"
 #include "defs.h"
 
+#define NSUPERPG 16
+
 void freerange(void *pa_start, void *pa_end);
 
 extern char end[]; // first address after kernel.
@@ -23,11 +25,65 @@ struct {
   struct run *freelist;
 } kmem;
 
+struct super_run {
+  struct super_run *next;
+};
+
+struct {
+  struct spinlock lock;
+  struct super_run *freelist;
+} supermem;
+
+void superfree(void *pa)
+{
+  struct super_run *r;
+
+  if(((uint64)pa % SUPERPGSIZE) != 0 || (char*)pa < (char*)(PHYSTOP - NSUPERPG * SUPERPGSIZE) || (uint64)pa >= PHYSTOP)
+    panic("superfree");
+
+  memset(pa, 1, SUPERPGSIZE);
+
+  r = (struct super_run*)pa;
+
+  acquire(&supermem.lock);
+  r->next = supermem.freelist;
+  supermem.freelist = r;
+  release(&supermem.lock);
+}
+
+void supermeminit(void)
+{
+  initlock(&supermem.lock, "supermem");
+  supermem.freelist = 0;
+
+  char *p = (char *)PHYSTOP;
+  for(int i = 0; i < NSUPERPG; i++){
+    p -= SUPERPGSIZE;
+    superfree(p);
+  }
+}
+
+void *superalloc(void)
+{
+  struct super_run *r;
+
+  acquire(&supermem.lock);
+  r = supermem.freelist;
+  if(r)
+    supermem.freelist = r->next;
+  release(&supermem.lock);
+
+  if(r)
+    memset((char*)r, 5, SUPERPGSIZE);
+  return (void*)r;
+}
+
 void
 kinit()
 {
   initlock(&kmem.lock, "kmem");
-  freerange(end, (void*)PHYSTOP);
+  freerange(end, (void*)(PHYSTOP - NSUPERPG * SUPERPGSIZE));
+  supermeminit();
 }
 
 void
