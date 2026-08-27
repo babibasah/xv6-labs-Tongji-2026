@@ -1,0 +1,38 @@
+void main(void) {
+  48:	ff010113          	addi	sp,sp,-16
+  4c:	00113423          	sd	ra,8(sp)
+  50:	00813023          	sd	s0,0(sp)
+  54:	01010413          	addi	s0,sp,16
+  printf("%d %d\n", f(8)+1, 13);
+  58:	00d00613          	li	a2,13
+  5c:	00c00593          	li	a1,12
+  60:	00001517          	auipc	a0,0x1
+  64:	d2050513          	addi	a0,a0,-736 # d80 <malloc+0x178>
+  68:	299000ef          	jal	b00 <printf>
+  exit(0);
+  6c:	00000513          	li	a0,0
+  70:	464000ef          	jal	4d4 <exit>
+}
+
+1. Which registers contain arguments to functions? For example, which register holds 13 in main's call to printf?
+Function arguments are passed in registers a0-a7.
+Register a2 holds the value 13 in main's call to printf.
+
+2. Where is the call to function f in the assembly code for main? Where is the call to g?
+There are no calls to f or g in main. The compiler inlined both functions and precomputed the expression f(8)+1 to the constant 12 at compile time.
+
+3. At what address is the function printf located?
+0xb00
+
+4. What value is in the register ra just after the jalr to printf in main?
+0x6c
+
+5. What is the output? Here's an ASCII table that maps bytes to characters.
+The output depends on that fact that the RISC-V is little-endian. If the RISC-V were instead big-endian what would you set i to in order to yield the same output? Would you need to change 57616 to a different value?
+Output = "HE110 World". 
+If RISC-V were big-endian, i needs to be 0x726c6400. 
+57616 does not need to be changed because it is passed in a register as a numerical value rather than read from memory.
+
+6. In the following code, what is going to be printed after 'y='? Why does this happen?
+It will print whatever garbage value that is in register a2. This is because the caller did not initialize register a2, as only one argument was passed within the command (3)
+
