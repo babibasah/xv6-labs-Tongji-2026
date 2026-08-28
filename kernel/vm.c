@@ -347,24 +347,42 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
   uint64 n, va0, pa0;
   pte_t *pte;
+  struct proc *p = myproc();
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
     if(va0 >= MAXVA)
       return -1;
-  
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0) {
-      if((pa0 = vmfault(pagetable, va0, 0)) == 0) {
+
+    pte = walk(pagetable, va0, 0);
+
+    if(pte == 0 || (*pte & PTE_V) == 0){
+      if(p && pagetable == p->pagetable && va0 < p->sz){
+        if(vmfault(pagetable, va0, 0) == 0)
+          return -1;
+        pte = walk(pagetable, va0, 0);
+        if(pte == 0)
+          return -1;
+      } else {
         return -1;
       }
     }
 
-    pte = walk(pagetable, va0, 0);
-    // forbid copyout over read-only user text pages.
+    if((*pte & PTE_U) == 0)
+      return -1;
+
+    if(*pte & PTE_COW){
+      if(cowalloc(pagetable, va0) < 0)
+        return -1;
+      pte = walk(pagetable, va0, 0);
+      if(pte == 0)
+        return -1;
+    }
+
     if((*pte & PTE_W) == 0)
       return -1;
-      
+
+    pa0 = PTE2PA(*pte);
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
@@ -458,20 +476,28 @@ vmfault(pagetable_t pagetable, uint64 va, int read)
   uint64 mem;
   struct proc *p = myproc();
 
-  if (va >= p->sz)
+  if (va >= p->sz || va >= MAXVA)
     return 0;
+
+  if (p->trapframe && va < p->trapframe->sp && va >= PGROUNDDOWN(p->trapframe->sp) - PGSIZE)
+    return 0;
+
   va = PGROUNDDOWN(va);
   if(ismapped(pagetable, va)) {
     return 0;
   }
+
   mem = (uint64) kalloc();
   if(mem == 0)
     return 0;
+
   memset((void *) mem, 0, PGSIZE);
-  if (mappages(p->pagetable, va, PGSIZE, mem, PTE_W|PTE_U|PTE_R) != 0) {
+
+  if (mappages(pagetable, va, PGSIZE, mem, PTE_W | PTE_U | PTE_R) != 0) {
     kfree((void *)mem);
     return 0;
   }
+
   return mem;
 }
 
@@ -485,5 +511,44 @@ ismapped(pagetable_t pagetable, uint64 va)
   if (*pte & PTE_V){
     return 1;
   }
+  return 0;
+}
+
+int
+cowalloc(pagetable_t pagetable, uint64 va)
+{
+  pte_t *pte;
+  uint64 pa;
+  uint flags;
+  char *mem;
+
+  if(va >= MAXVA)
+    return -1;
+
+  va = PGROUNDDOWN(va);
+  pte = walk(pagetable, va, 0);
+  if(pte == 0)
+    return -1;
+  if((*pte & PTE_V) == 0 || (*pte & PTE_U) == 0)
+    return -1;
+
+  if((*pte & PTE_COW) == 0)
+    return -1;
+
+  pa = PTE2PA(*pte);
+  flags = (PTE_FLAGS(*pte) & ~PTE_COW) | PTE_W;
+
+  if(getref(pa) > 1) {
+    if((mem = kalloc()) == 0)
+      return -1;
+
+    memmove(mem, (char*)pa, PGSIZE);
+    *pte = PA2PTE(mem) | flags;
+    kfree((void*)pa);
+  }
+  else {
+    *pte = PA2PTE(pa) | flags;
+  }
+
   return 0;
 }
