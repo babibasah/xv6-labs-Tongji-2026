@@ -10,6 +10,26 @@
 #include "file.h"
 #include "net.h"
 
+#define MAX_SOCKETS 16
+#define MAX_QUEUE_LEN 16
+
+struct packet {
+  struct packet *next;
+  uint32 src_ip;
+  uint16 src_port;
+  uint16 len;
+  char *buf;
+};
+
+struct sock {
+  int used;
+  uint16 port;
+  struct spinlock lock;
+  struct packet *head;
+  struct packet *tail;
+  int qlen;
+};
+
 // xv6's ethernet and IP addresses
 static uint8 local_mac[ETHADDR_LEN] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 static uint32 local_ip = MAKE_IP_ADDR(10, 0, 2, 15);
@@ -18,11 +38,20 @@ static uint32 local_ip = MAKE_IP_ADDR(10, 0, 2, 15);
 static uint8 host_mac[ETHADDR_LEN] = { 0x52, 0x55, 0x0a, 0x00, 0x02, 0x02 };
 
 static struct spinlock netlock;
+static struct sock sockets[MAX_SOCKETS];
+static struct spinlock net_lock;
 
 void
 netinit(void)
 {
-  initlock(&netlock, "netlock");
+  initlock(&net_lock, "net_lock");
+  for (int i = 0; i < MAX_SOCKETS; i++) {
+    initlock(&sockets[i].lock, "sock_lock");
+    sockets[i].used = 0;
+    sockets[i].head = 0;
+    sockets[i].tail = 0;
+    sockets[i].qlen = 0;
+  }
 }
 
 
@@ -34,11 +63,36 @@ netinit(void)
 uint64
 sys_bind(void)
 {
-  //
-  // Your code here.
-  //
+  int port;
+  argint(0, &port);
 
-  return -1;
+  acquire(&netlock);
+  struct sock *free_sk = 0;
+  for (int i = 0; i < MAX_SOCKETS; i++) {
+    if (sockets[i].used && sockets[i].port == (uint16)port) {
+      release(&netlock);
+      return 0;
+    }
+    if (!sockets[i].used && !free_sk) {
+      free_sk = &sockets[i];
+    }
+  }
+
+  if (!free_sk) {
+    release(&netlock);
+    return -1;
+  }
+
+  acquire(&free_sk->lock);
+  free_sk->used = 1;
+  free_sk->port = (uint16)port;
+  free_sk->head = 0;
+  free_sk->tail = 0;
+  free_sk->qlen = 0;
+  release(&free_sk->lock);
+
+  release(&netlock);
+  return 0;
 }
 
 //
@@ -74,10 +128,60 @@ sys_unbind(void)
 uint64
 sys_recv(void)
 {
-  //
-  // Your code here.
-  //
-  return -1;
+  int dport, maxlen;
+  uint64 src_addr, sport_addr, buf_addr;
+
+  argint(0, &dport);
+  argaddr(1, &src_addr);
+  argaddr(2, &sport_addr);
+  argaddr(3, &buf_addr);
+  argint(4, &maxlen);
+
+  acquire(&netlock);
+  struct sock *sk = 0;
+  for (int i = 0; i < MAX_SOCKETS; i++) {
+    if (sockets[i].used && sockets[i].port == (uint16)dport) {
+      sk = &sockets[i];
+      break;
+    }
+  }
+  release(&netlock);
+
+  if (!sk)
+    return -1;
+
+  acquire(&sk->lock);
+  while (sk->head == 0) {
+    if (myproc()->killed) {
+      release(&sk->lock);
+      return -1;
+    }
+    sleep(sk, &sk->lock);
+  }
+
+  struct packet *pkt = sk->head;
+  sk->head = pkt->next;
+  if (sk->head == 0) {
+    sk->tail = 0;
+  }
+  sk->qlen--;
+  release(&sk->lock);
+
+  struct proc *p = myproc();
+  int copy_len = pkt->len < maxlen ? pkt->len : maxlen;
+  char *payload = pkt->buf + sizeof(struct eth) + sizeof(struct ip) + sizeof(struct udp);
+
+  if (copyout(p->pagetable, buf_addr, payload, copy_len) < 0 ||
+      copyout(p->pagetable, src_addr, (char *)&pkt->src_ip, sizeof(pkt->src_ip)) < 0 ||
+      copyout(p->pagetable, sport_addr, (char *)&pkt->src_port, sizeof(pkt->src_port)) < 0) {
+    kfree(pkt->buf);
+    kfree((char *)pkt);
+    return -1;
+  }
+
+  kfree(pkt->buf);
+  kfree((char *)pkt);
+  return copy_len;
 }
 
 // This code is lifted from FreeBSD's ping.c, and is copyright by the Regents
@@ -182,16 +286,89 @@ sys_send(void)
 void
 ip_rx(char *buf, int len)
 {
-  // don't delete this printf; make grade depends on it.
   static int seen_ip = 0;
   if(seen_ip == 0)
     printf("ip_rx: received an IP packet\n");
   seen_ip = 1;
 
-  //
-  // Your code here.
-  //
-  
+  if (len < sizeof(struct eth) + sizeof(struct ip)) {
+    kfree(buf);
+    return;
+  }
+
+  struct ip *ip = (struct ip *)(buf + sizeof(struct eth));
+
+  if (ip->ip_p != IPPROTO_UDP) {
+    kfree(buf);
+    return;
+  }
+
+  if (len < sizeof(struct eth) + sizeof(struct ip) + sizeof(struct udp)) {
+    kfree(buf);
+    return;
+  }
+
+  struct udp *udp = (struct udp *)((char *)ip + sizeof(struct ip));
+
+  uint16 dport = ntohs(udp->dport);
+  uint16 sport = ntohs(udp->sport);
+  uint32 src_ip = ntohl(ip->ip_src);
+  uint16 ulen = ntohs(udp->ulen);
+
+  if (ulen < sizeof(struct udp)) {
+    kfree(buf);
+    return;
+  }
+
+  uint16 payload_len = ulen - sizeof(struct udp);
+
+  acquire(&netlock);
+  struct sock *sk = 0;
+  for (int i = 0; i < MAX_SOCKETS; i++) {
+    if (sockets[i].used && sockets[i].port == dport) {
+      sk = &sockets[i];
+      break;
+    }
+  }
+  release(&netlock);
+
+  if (!sk) {
+    kfree(buf);
+    return;
+  }
+
+  acquire(&sk->lock);
+
+  if (sk->qlen >= MAX_QUEUE_LEN) {
+    release(&sk->lock);
+    kfree(buf);
+    return;
+  }
+
+  struct packet *pkt = (struct packet *)kalloc();
+  if (!pkt) {
+    release(&sk->lock);
+    kfree(buf);
+    return;
+  }
+
+  pkt->next = 0;
+  pkt->src_ip = src_ip;
+  pkt->src_port = sport;
+  pkt->len = payload_len;
+  pkt->buf = buf;
+
+  if (sk->tail) {
+    sk->tail->next = pkt;
+    sk->tail = pkt;
+  } else {
+    sk->head = pkt;
+    sk->tail = pkt;
+  }
+  sk->qlen++;
+
+  wakeup(sk);
+  release(&sk->lock);
 }
 
 //
