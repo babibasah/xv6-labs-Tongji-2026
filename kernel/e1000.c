@@ -15,6 +15,10 @@ static struct rx_desc rx_ring[RX_RING_SIZE] __attribute__((aligned(16)));
 
 // remember where the e1000's registers live.
 static volatile uint32 *regs;
+static struct spinlock e1000_tx_lock;
+static struct spinlock e1000_rx_lock;
+static char *tx_bufs[TX_RING_SIZE];
+static char *rx_bufs[RX_RING_SIZE];
 
 struct spinlock e1000_lock;
 
@@ -28,7 +32,8 @@ e1000_init(uint32 *xregs)
 {
   int i;
 
-  initlock(&e1000_lock, "e1000");
+  initlock(&e1000_tx_lock, "e1000_tx");
+  initlock(&e1000_rx_lock, "e1000_rx");
 
   regs = xregs;
 
@@ -68,8 +73,9 @@ e1000_init(uint32 *xregs)
   regs[E1000_RA] = 0x12005452;
   regs[E1000_RA+1] = 0x5634 | (1<<31);
   // multicast table
-  for (int i = 0; i < 4096/32; i++)
-    regs[E1000_MTA + i] = 0;
+  for (i = 0; i < RX_RING_SIZE; i++) {
+    rx_bufs[i] = (char *)rx_ring[i].addr;
+  }
 
   // transmitter control bits.
   regs[E1000_TCTL] = E1000_TCTL_EN |  // enable
@@ -93,32 +99,64 @@ e1000_init(uint32 *xregs)
 int
 e1000_transmit(char *buf, int len)
 {
-  //
-  // Your code here.
-  //
-  // buf contains an ethernet frame; program it into
-  // the TX descriptor ring so that the e1000 sends it. Stash
-  // a pointer so that it can be freed after send completes.
-  //
-  // return 0 on success.
-  // return -1 on failure (e.g., there is no descriptor available)
-  // so that the caller knows to free buf.
-  //
+  acquire(&e1000_tx_lock);
 
-  
+  uint32 tail = regs[E1000_TDT];
+
+  if ((tx_ring[tail].status & E1000_TXD_STAT_DD) == 0) {
+    release(&e1000_tx_lock);
+    return -1;
+  }
+
+  if (tx_bufs[tail]) {
+    kfree(tx_bufs[tail]);
+  }
+
+  tx_bufs[tail] = buf;
+  tx_ring[tail].addr = (uint64)buf;
+  tx_ring[tail].length = len;
+  tx_ring[tail].cmd = E1000_TXD_CMD_EOP | E1000_TXD_CMD_RS;
+
+  regs[E1000_TDT] = (tail + 1) % TX_RING_SIZE;
+
+  release(&e1000_tx_lock);
   return 0;
 }
 
 static void
 e1000_recv(void)
 {
-  //
-  // Your code here.
-  //
-  // Check for packets that have arrived from the e1000
-  // Create and deliver a buf for each packet (using net_rx()).
-  //
+  acquire(&e1000_rx_lock);
 
+  while (1) {
+    uint32 tail = (regs[E1000_RDT] + 1) % RX_RING_SIZE;
+
+    // Stop if no new packet has been delivered by hardware
+    if ((rx_ring[tail].status & E1000_RXD_STAT_DD) == 0) {
+      break;
+    }
+
+    char *new_buf = kalloc();
+    if (!new_buf) {
+      break;
+    }
+
+    char *buf = rx_bufs[tail];
+    int len = rx_ring[tail].length;
+
+    // Refill descriptor with fresh buffer and clear status
+    rx_bufs[tail] = new_buf;
+    rx_ring[tail].addr = (uint64)new_buf;
+    rx_ring[tail].status = 0;
+
+    // Update RDT to notify hardware
+    regs[E1000_RDT] = tail;
+
+    // Deliver received packet to protocol stack
+    net_rx(buf, len);
+  }
+
+  release(&e1000_rx_lock);
 }
 
 void
