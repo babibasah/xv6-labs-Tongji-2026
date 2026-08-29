@@ -1,7 +1,3 @@
-// Physical memory allocator, for user processes,
-// kernel stacks, page-table pages,
-// and pipe buffers. Allocates whole 4096-byte pages.
-
 #include "types.h"
 #include "param.h"
 #include "memlayout.h"
@@ -21,12 +17,17 @@ struct run {
 struct {
   struct spinlock lock;
   struct run *freelist;
-} kmem;
+} kmem[NCPU];
 
 void
 kinit()
 {
-  initlock(&kmem.lock, "kmem");
+  char name[8];
+  for(int i = 0; i < NCPU; i++) {
+    snprintf(name, sizeof(name), "kmem%d", i);
+    initlock(&kmem[i].lock, name);
+    kmem[i].freelist = 0;
+  }
   freerange(end, (void*)PHYSTOP);
 }
 
@@ -56,10 +57,13 @@ kfree(void *pa)
 
   r = (struct run*)pa;
 
-  acquire(&kmem.lock);
-  r->next = kmem.freelist;
-  kmem.freelist = r;
-  release(&kmem.lock);
+  push_off();
+  int c = cpuid();
+  acquire(&kmem[c].lock);
+  r->next = kmem[c].freelist;
+  kmem[c].freelist = r;
+  release(&kmem[c].lock);
+  pop_off();
 }
 
 // Allocate one 4096-byte page of physical memory.
@@ -70,13 +74,30 @@ kalloc(void)
 {
   struct run *r;
 
-  acquire(&kmem.lock);
-  r = kmem.freelist;
-  if(r)
-    kmem.freelist = r->next;
-  release(&kmem.lock);
+  push_off();
+  int c = cpuid();
 
+  acquire(&kmem[c].lock);
+  r = kmem[c].freelist;
   if(r)
-    memset((char*)r, 5, PGSIZE); // fill with junk
-  return (void*)r;
+    kmem[c].freelist = r->next;
+  release(&kmem[c].lock);
+
+  if(r == 0){
+    // O(1) steal: one page from the first non-empty peer list
+    for(int i = 0; i < NCPU; i++){
+      if(i == c)
+        continue;
+      acquire(&kmem[i].lock);
+      r = kmem[i].freelist;
+      if(r)
+        kmem[i].freelist = r->next;
+      release(&kmem[i].lock);
+      if(r)
+        break;
+    }
+  }
+
+  pop_off();
+  return (void *)r;
 }
