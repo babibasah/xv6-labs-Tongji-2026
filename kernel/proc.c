@@ -279,6 +279,12 @@ kfork(void)
   // Cause fork to return 0 in the child.
   np->trapframe->a0 = 0;
 
+  for(int i = 0; i < NVMA; i++){
+    np->vmas[i] = p->vmas[i];
+    if(np->vmas[i].used)
+      np->vmas[i].f = filedup(p->vmas[i].f);
+  }
+
   // increment reference counts on open file descriptors.
   for(i = 0; i < NOFILE; i++)
     if(p->ofile[i])
@@ -334,6 +340,16 @@ kexit(int status)
       struct file *f = p->ofile[fd];
       fileclose(f);
       p->ofile[fd] = 0;
+    }
+  }
+
+  for(int i = 0; i < NVMA; i++){
+    struct vma *v = &p->vmas[i];
+    if(v->used){
+      vma_unmap(p, v, v->addr, v->len);
+      v->used = 0;
+      fileclose(v->f);
+      v->f = 0;
     }
   }
 

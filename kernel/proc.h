@@ -1,3 +1,16 @@
+#define NVMA 16
+#define MMAP_BASE 0xc0000000UL
+
+struct vma {
+  int used;
+  uint64 addr;
+  uint64 len;
+  uint64 offset;
+  int prot;
+  int flags;
+  struct file *f;
+};
+
 // Saved registers for kernel context switches.
 struct context {
   uint64 ra;
@@ -103,5 +116,6 @@ struct proc {
   struct context context;      // swtch() here to run process
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
+  struct vma vmas[NVMA];
   char name[16];               // Process name (debugging)
 };

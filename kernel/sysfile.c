@@ -503,3 +503,136 @@ sys_pipe(void)
   }
   return 0;
 }
+
+struct vma*
+vma_lookup(struct proc *p, uint64 va)
+{
+  for (int i = 0; i < NVMA; i++) {
+    struct vma *v = &p->vmas[i];
+
+    if (v->used && va >= v->addr && va < v->addr + v->len)
+      return v;
+  }
+  return 0;
+}
+
+void
+vma_unmap(struct proc *p, struct vma *vma, uint64 va, uint64 len)
+{
+  for(uint64 a = va; a < va + len; a += PGSIZE){
+    pte_t *pte = walk(p->pagetable, a, 0);
+
+    if(pte == 0 || (*pte & PTE_V) == 0)
+      continue;
+
+    if((vma->flags & MAP_SHARED) && (vma->prot & PROT_WRITE)){
+      uint64 pa = PTE2PA(*pte);
+      uint64 off = vma->offset + (a - vma->addr);
+      int n = PGSIZE;
+
+      begin_op();
+      ilock(vma->f->ip);
+
+      if(off < vma->f->ip->size){
+        if(off + n > vma->f->ip->size)
+          n = vma->f->ip->size - off;
+
+        writei(vma->f->ip, 0, pa, off, n);
+      }
+
+      iunlock(vma->f->ip);
+      end_op();
+    }
+
+    uvmunmap(p->pagetable, a, 1, 1);
+  }
+}
+
+uint64
+sys_mmap(void)
+{
+  uint64 addr;
+  int len, prot, flags, offset;
+  struct file *f;
+
+  argaddr(0, &addr);
+  argint(1, &len);
+  argint(2, &prot);
+  argint(3, &flags);
+  if(argfd(4, 0, &f) < 0)
+    return -1;
+  argint(5, &offset);
+
+  if ((prot & PROT_WRITE) && (flags & MAP_SHARED) && !f->writable)
+    return -1;
+
+  struct proc *p = myproc();
+
+  struct vma *vma = 0;
+  for (int i = 0; i < NVMA; i++) {
+    if (!p->vmas[i].used) { vma = &p->vmas[i]; break; }
+  }
+  if (vma == 0)
+    return -1;
+
+  uint64 rlen = PGROUNDUP(len);
+  uint64 va = MMAP_BASE;
+  int moved;
+  do {
+    moved = 0;
+    for (int i = 0; i < NVMA; i++) {
+      struct vma *v = &p->vmas[i];
+      if (v->used && va < v->addr + v->len && v->addr < va + rlen) {
+        va = v->addr + v->len;
+        moved = 1;
+      }
+    }
+  } while (moved);
+
+  vma->used = 1;
+  vma->addr = va;
+  vma->offset = offset;
+  vma->len = rlen;
+  vma->prot = prot;
+  vma->flags = flags;
+  vma->f = filedup(f);
+
+  return va;
+}
+
+uint64
+sys_munmap(void)
+{
+  uint64 addr;
+  int len;
+
+  argaddr(0, &addr);
+  argint(1, &len);
+  if (len <= 0)
+    return -1;
+
+  struct proc *p = myproc();
+  struct vma *vma = vma_lookup(p, addr);
+  if (vma == 0)
+    return 0;
+
+  uint64 end = addr + len;
+  if (end > vma->addr + vma->len)
+    end = vma->addr + vma->len;
+
+  vma_unmap(p, vma, addr, end - addr);
+
+  if (addr == vma->addr && end == vma->addr + vma->len) {
+    vma->used = 0;
+    fileclose(vma->f);
+    vma->f = 0;
+  } else if (addr == vma->addr) {
+    uint64 diff = end - vma->addr;
+    vma->addr += diff;
+    vma->offset += diff;
+    vma->len -= diff;
+  } else {
+    vma->len = addr - vma->addr;
+  }
+  return 0;
+}

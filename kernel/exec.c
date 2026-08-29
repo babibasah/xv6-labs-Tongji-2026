@@ -126,6 +126,16 @@ kexec(char *path, char **argv)
     if(*s == '/')
       last = s+1;
   safestrcpy(p->name, last, sizeof(p->name));
+
+  for(int i = 0; i < NVMA; i++){
+    struct vma *v = &p->vmas[i];
+    if(v->used){
+      vma_unmap(p, v, v->addr, v->len);
+      v->used = 0;
+      fileclose(v->f);
+      v->f = 0;
+    }
+  }
     
   // Commit to the user image.
   oldpagetable = p->pagetable;

@@ -3,8 +3,12 @@
 #include "memlayout.h"
 #include "riscv.h"
 #include "spinlock.h"
+#include "sleeplock.h"
+#include "fs.h"
 #include "proc.h"
 #include "defs.h"
+#include "fcntl.h"
+#include "file.h"
 
 struct spinlock tickslock;
 uint ticks;
@@ -68,9 +72,43 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else if((r_scause() == 15 || r_scause() == 13) &&
-            vmfault(p->pagetable, r_stval(), (r_scause() == 13)? 1 : 0) != 0) {
-    // page fault on lazily-allocated page
+  } else if(r_scause() == 13 || r_scause() == 15) {
+    // page fault: check mmap first, then fall back to CoW
+    uint64 va = r_stval();
+    struct vma *v = vma_lookup(p, va);
+    
+    if(v) {
+      if((r_scause() == 13 && !(v->prot & PROT_READ)) ||
+         (r_scause() == 15 && !(v->prot & PROT_WRITE))) {
+        setkilled(p);
+      } else {
+        uint64 page_va = PGROUNDDOWN(va);
+        char *mem = kalloc();
+        if(mem == 0){
+          setkilled(p);
+        } else {
+          memset(mem, 0, PGSIZE);
+          ilock(v->f->ip);
+          readi(v->f->ip, 0, (uint64)mem, page_va - v->addr, PGSIZE);
+          iunlock(v->f->ip);
+          
+          int perm = PTE_U;
+          if(v->prot & PROT_READ)  perm |= PTE_R;
+          if(v->prot & PROT_WRITE) perm |= PTE_W;
+          
+          if(mappages(p->pagetable, page_va, PGSIZE, (uint64)mem, perm) != 0){
+            kfree(mem);
+            setkilled(p);
+          }
+        }
+      }
+    } else {
+      if(vmfault(p->pagetable, va, (r_scause() == 13) ? 1 : 0) == 0) {
+        printf("usertrap(): unexpected scause 0x%lx pid=%d\n", r_scause(), p->pid);
+        printf("            sepc=0x%lx stval=0x%lx\n", r_sepc(), r_stval());
+        setkilled(p);
+      }
+    }
   } else {
     printf("usertrap(): unexpected scause 0x%lx pid=%d\n", r_scause(), p->pid);
     printf("            sepc=0x%lx stval=0x%lx\n", r_sepc(), r_stval());
