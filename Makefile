@@ -88,6 +88,7 @@ LD = $(TOOLPREFIX)ld
 OBJCOPY = $(TOOLPREFIX)objcopy
 OBJDUMP = $(TOOLPREFIX)objdump
 
+CFLAGS = -Wall -Werror -O -fno-omit-frame-pointer -ggdb -gdwarf-2
 CFLAGS = -Wall -Werror -Wno-unknown-attributes -O -fno-omit-frame-pointer -ggdb -gdwarf-2
 
 ifdef LAB
@@ -106,6 +107,9 @@ CFLAGS += -fno-builtin-strchr -fno-builtin-exit -fno-builtin-malloc -fno-builtin
 CFLAGS += -fno-builtin-free
 CFLAGS += -fno-builtin-memcpy -Wno-main
 CFLAGS += -fno-builtin-printf -fno-builtin-fprintf -fno-builtin-vprintf
+CFLAGS += -march=rv64g -mabi=lp64
+CFLAGS += -fno-pie -no-pie -fno-pic
+CFLAGS += -fno-tree-loop-distribute-patterns -fno-builtin
 CFLAGS += -I.
 CFLAGS += $(shell $(CC) -fno-stack-protector -E -x c /dev/null >/dev/null 2>&1 && echo -fno-stack-protector)
 
@@ -138,7 +142,7 @@ $K/%.o: $K/%.c
 	$(CC) $(CFLAGS) $(EXTRAFLAG) -c -o $@ $<
 
 $K/%.o: $K/%.S
-	$(CC) -g -c -o $@ $<
+	$(CC) $(CFLAGS) -g -c -o $@ $<
 
 tags: $(OBJS)
 	etags kernel/*.S kernel/*.c
@@ -213,6 +217,11 @@ UPROGS += \
 	$U/_secret
 endif
 
+ifeq ($(LAB),lock)
+UPROGS += \
+	$U/_stats
+endif
+
 ifeq ($(LAB),traps)
 UPROGS += \
 	$U/_call\
@@ -255,8 +264,7 @@ endif
 ifeq ($(LAB),lock)
 UPROGS += \
 	$U/_kalloctest\
-	$U/_stats\
-	$U/_rwlktest
+	$U/_bcachetest
 endif
 
 ifeq ($(LAB),fs)
@@ -312,9 +320,6 @@ CPUS := 3
 endif
 ifeq ($(LAB),fs)
 CPUS := 1
-endif
-ifeq ($(LAB),lock)
-CPUS := 4
 endif
 
 FWDPORT1 = $(shell expr `id -u` % 5000 + 25999)
