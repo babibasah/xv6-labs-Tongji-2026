@@ -1,0 +1,77 @@
+1. Inspect a user-process page table (print_pgtbl)
+
+Permission Bit Breakdown (Sv39):
+- Bit 0 (0x01) PTE_V: Valid
+- Bit 1 (0x02) PTE_R: Readable
+- Bit 2 (0x04) PTE_W: Writable
+- Bit 3 (0x08) PTE_X: Executable
+- Bit 4 (0x10) PTE_U: User-accessible
+- Bit 6 (0x40) PTE_A: Accessed
+- Bit 7 (0x80) PTE_D: Dirty
+
+Page Table Entries Analysis:
+
+1. va 0x0 (pte 0x21FCF45B, pa 0x87F3D000, perm 0x5B):
+   - Logical content: User code / text segment (ELF instructions).
+   - Permissions: 0x5B (PTE_V | PTE_R | PTE_X | PTE_U | PTE_A).
+   - Purpose: Valid, readable, executable, and user-accessible code page.
+
+2. va 0x1000 (pte 0x21FCE85B, pa 0x87F3A000, perm 0x5B / 0x57):
+   - Logical content: Initial user data / heap segment.
+   - Permissions: 0x5B / 0x57 (PTE_V | PTE_R | PTE_W | PTE_U | PTE_A).
+   - Purpose: Stores global initialized variables and dynamic heap allocations.
+
+3. va 0x2000 (pte 0x0, pa 0x0, perm 0x0):
+   - Logical content: Guard page below the user stack.
+   - Permissions: 0x0 (PTE_V is not set).
+   - Purpose: Left unmapped intentionally to trigger a page fault trap on stack overflow.
+
+4. va 0x3000 (pte 0x21FC64D7, pa 0x87F19000, perm 0xD7 / 0x57):
+   - Logical content: User stack page.
+   - Permissions: 0xD7 (PTE_V | PTE_R | PTE_W | PTE_U | PTE_A | PTE_D).
+   - Purpose: Stores local variables, return addresses, and stack frames for user execution.
+
+5. va 0xFFFFD000 / USYSCALL (pte 0x21FD4813, pa 0x87F52000, perm 0x13):
+   - Logical content: Shared read-only page containing struct usyscall (stores current PID).
+   - Permissions: 0x13 (PTE_V | PTE_R | PTE_U).
+   - Purpose: Allows userspace to read process metadata (e.g. ugetpid()) without entering kernel mode.
+
+6. va 0xFFFFE000 / TRAPFRAME (pte 0x21FD80C7, pa 0x87F60000, perm 0xC7):
+   - Logical content: Process trapframe.
+   - Permissions: 0xC7 (PTE_V | PTE_R | PTE_W | PTE_A | PTE_D; PTE_U is 0).
+   - Purpose: Saves user register state across trap transitions; strictly kernel accessible.
+
+7. va 0xFFFFF000 / TRAMPOLINE (pte 0x20001C4B, pa 0x80007000, perm 0x4B):
+   - Logical content: Trampoline code (uservec and userret).
+   - Permissions: 0x4B (PTE_V | PTE_R | PTE_X | PTE_A; PTE_U is 0).
+   - Purpose: Contains code to switch between user page table and kernel page table during traps.
+
+
+2. Speed up system calls
+
+Which other xv6 system call(s) could be made faster using this shared page? Explain how.
+
+- uptime():
+  The xv6 kernel maintains a global clock tick counter (`ticks`) in `kernel/trap.c`, which is updated on every timer interrupt.
+  By extending `struct usyscall` to include a `uint ticks` field and updating this field in the shared page inside `clockintr()` during timer interrupts, user processes can read the current tick count via a simple memory load instruction. This eliminates the overhead of executing an `ecall`, switching page tables, saving/restoring register state, and returning from a kernel trap.
+
+
+3. Print a page table (vmprint)
+
+Explanation of leaf pages and relation to print_pgtbl():
+
+1. Leaf Page Contents & Permissions:
+   - Level 0 entries under Root Entry 0 (Low Addresses):
+     * va 0x0000000000000000: User Code (PTE_V | PTE_R | PTE_X | PTE_U).
+     * va 0x0000000000001000: User Data / Heap (PTE_V | PTE_R | PTE_W | PTE_U).
+     * va 0x0000000000002000: Guard Page (invalid/unmapped, omitted from vmprint).
+     * va 0x0000000000003000: User Stack (PTE_V | PTE_R | PTE_W | PTE_U).
+
+   - Level 0 entries under Root Entry 255 (va 0x0000003FC0000000, High Addresses):
+     * va 0x0000003FFFFFD000 (USYSCALL): User read-only page (PTE_V | PTE_R | PTE_U).
+     * va 0x0000003FFFFFFE000 (TRAPFRAME): Trapframe page (PTE_V | PTE_R | PTE_W; PTE_U = 0).
+     * va 0x0000003FFFFFFF000 (TRAMPOLINE): Trampoline page (PTE_V | PTE_R | PTE_X; PTE_U = 0).
+
+2. Relation to print_pgtbl():
+   - `vmprint` performs a recursive traversal of the entire 3-level Sv39 trie (Level 2 -> Level 1 -> Level 0), printing both intermediate directory pointers (PTEs where PTE_V=1 and R/W/X=0) and leaf PTEs.
+   - `print_pgtbl()` directly queries and formats only the Level-0 leaf page table entries for specific target ranges without showing the multi-level directory hierarchy.
